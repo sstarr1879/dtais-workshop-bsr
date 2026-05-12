@@ -931,6 +931,132 @@ PROGRESS_ASSESSMENT_TAIL = [
 ]
 
 # =============================================================================
+# Narrative tobacco profile — assigned per patient INDEPENDENTLY of the CSV
+# smoking_status field, so the structured data and the unstructured notes
+# sometimes agree, sometimes disagree, and sometimes the notes are silent.
+# Workshop hook: structured-vs-unstructured reconciliation.
+# =============================================================================
+
+NARRATIVE_TOBACCO = {
+    "silent": {
+        # Chart says nothing about tobacco anywhere
+        "weight": 25,
+    },
+    "never": {
+        "weight": 30,
+        "social_hx": [
+            "Tobacco: denies, lifelong non-smoker.",
+            "Tobacco: never smoker per patient report.",
+            "Tobacco: patient denies tobacco use of any kind.",
+            "Tobacco: no history of cigarette or smokeless use.",
+        ],
+    },
+    "former": {
+        "weight": 22,
+        "social_hx": [
+            "Tobacco: former smoker, quit approximately {n_years_quit} years ago. Pack-years not precisely documented.",
+            "Tobacco: prior tobacco use, cessation estimated {n_years_quit} years prior.",
+            "Tobacco: ex-smoker, quit well before current admission.",
+            "Tobacco: former smoker (approximately {pack_years} pack-year history, quit {n_years_quit} years ago).",
+        ],
+        "hpi_incidental": [
+            "Patient mentioned 'breathing hasn't been the same' since quitting smoking years ago.",
+            "Notes prior tobacco history; states cessation was 'difficult but worth it'.",
+            "On further questioning, patient acknowledged a prior smoking history, now remote.",
+        ],
+    },
+    "current_subtle": {
+        # Workshop-interesting: signals point to active use without ever
+        # explicitly saying so in social hx.
+        "weight": 13,
+        "social_hx": [
+            "Tobacco: declines to specify use pattern.",
+            "Tobacco: 'occasional', quantity not provided.",
+            "Tobacco: 'social' smoker per patient self-report.",
+            "Tobacco: patient appeared guarded when asked about smoking history.",
+        ],
+        "hpi_incidental": [
+            "Patient stepped out of the interview briefly, citing 'needing some air'.",
+            "Family member privately mentioned to staff that the patient 'still smokes a bit'.",
+        ],
+        "exam_addon": [
+            "Mild yellow staining noted on the right index and middle fingertips.",
+            "Faint tobacco odor noted on the patient's clothing.",
+            "Dentition with mild yellow staining; otherwise unremarkable.",
+        ],
+        "discharge_addon": [
+            "Nicotine replacement therapy was not initiated this admission; outpatient cessation resources discussed.",
+            "Patient declined formal tobacco cessation referral; written materials provided.",
+        ],
+    },
+    "current_overt": {
+        "weight": 10,
+        "social_hx": [
+            "Tobacco: current daily smoker, approximately {ppd} pack(s) per day for {pack_years} years ({pack_years} pack-year history).",
+            "Tobacco: continues to smoke {ppd} packs per day. Multiple prior quit attempts unsuccessful.",
+            "Tobacco: current smoker, {pack_years} pack-year cumulative exposure.",
+        ],
+        "hpi_incidental": [
+            "Patient candidly acknowledges ongoing daily cigarette use during the interview.",
+            "Patient endorses worsening exercise tolerance, which they attribute to continued smoking.",
+        ],
+        "exam_addon": [
+            "Nicotine staining present on the fingertips of the dominant hand.",
+            "Tobacco odor noted on patient and clothing on initial encounter.",
+        ],
+        "discharge_addon": [
+            "Smoking cessation reinforced. Nicotine patch initiated; quit-line referral provided.",
+            "Patient agreed to a trial of varenicline post-discharge.",
+            "Cessation counseling provided; patient enrolled in tobacco treatment program.",
+        ],
+    },
+}
+
+
+def tobacco_profile_for(pid: str) -> dict:
+    """Assign a deterministic per-patient tobacco narrative profile.
+
+    Independent of the CSV smoking_status so structured and unstructured
+    sometimes diverge.
+    """
+    rng = random.Random(f"tobacco-{pid}")
+    keys = list(NARRATIVE_TOBACCO.keys())
+    weights = [NARRATIVE_TOBACCO[k]["weight"] for k in keys]
+    key = rng.choices(keys, weights=weights, k=1)[0]
+    return {
+        "key": key,
+        "rng": rng,
+        "pack_years": rng.choice([10, 15, 20, 25, 30, 35, 40, 45]),
+        "n_years_quit": rng.choice([2, 3, 5, 8, 12, 15, 20]),
+        "ppd": rng.choice(["0.5", "1", "1.5", "2"]),
+    }
+
+
+def tobacco_social_hx_line(profile: dict):
+    data = NARRATIVE_TOBACCO[profile["key"]]
+    variants = data.get("social_hx", [])
+    if not variants:
+        return None
+    template = profile["rng"].choice(variants)
+    return template.format(
+        pack_years=profile["pack_years"],
+        n_years_quit=profile["n_years_quit"],
+        ppd=profile["ppd"],
+    )
+
+
+def tobacco_addon(profile: dict, key: str, prob: float):
+    """Maybe pick an addon line of type `key` from the profile."""
+    data = NARRATIVE_TOBACCO[profile["key"]]
+    pool = data.get(key, [])
+    if not pool:
+        return None
+    if profile["rng"].random() > prob:
+        return None
+    return profile["rng"].choice(pool)
+
+
+# =============================================================================
 # Helpers
 # =============================================================================
 
@@ -1048,16 +1174,22 @@ def bullets(items, start: int = 1) -> list[str]:
 # Per-note renderers — each returns a list of strings (lines)
 # =============================================================================
 
-def social_hx_block(row, rng) -> str:
-    tobacco = safe_str(row["smoking_status"])
-    if is_missing(tobacco):
-        tobacco_line = "Tobacco: not documented at this encounter."
-    else:
-        tobacco_line = f"Tobacco: {tobacco}."
+def social_hx_block(rng, tobacco_profile: dict) -> str:
+    """Build a social history paragraph.
+
+    Tobacco content comes from the narrative tobacco profile (independent of
+    CSV smoking_status). Profile may be 'silent' — in which case the social
+    history simply has no tobacco line at all.
+    """
+    parts = []
+    tob = tobacco_social_hx_line(tobacco_profile)
+    if tob:
+        parts.append(tob)
     alcohol = rng.choice(["denies", "occasional, < 2 drinks/week", "social use only", "prior heavy use, now in recovery"])
     drugs = rng.choice(["denies", "denies current use", "remote marijuana use"])
     lives = rng.choice(["alone", "with spouse", "with adult children", "independently in assisted living"])
-    return f"{tobacco_line} Alcohol: {alcohol}. Illicit drugs: {drugs}. Lives {lives}."
+    parts.append(f"Alcohol: {alcohol}. Illicit drugs: {drugs}. Lives {lives}.")
+    return " ".join(parts)
 
 
 def render_ed_triage(row, dx, when: datetime, rng) -> list[str]:
@@ -1079,7 +1211,7 @@ def render_ed_triage(row, dx, when: datetime, rng) -> list[str]:
     return out
 
 
-def render_ed_md(row, dx, when: datetime, rng) -> list[str]:
+def render_ed_md(row, dx, when: datetime, rng, tobacco_profile: dict) -> list[str]:
     md, role = rng.choice(PROVIDERS["ed_md"])
     sw = sex_word(safe_str(row["sex"]))
     age = safe_str(row["age"])
@@ -1114,10 +1246,13 @@ def render_ed_md(row, dx, when: datetime, rng) -> list[str]:
     ])))
 
     out += section_header("Social History")
-    out.append(wrap(social_hx_block(row, rng)))
+    out.append(wrap(social_hx_block(rng, tobacco_profile)))
 
     out += section_header("Physical Examination")
     out.append(wrap(dx["exam"]))
+    exam_extra = tobacco_addon(tobacco_profile, "exam_addon", prob=0.40)
+    if exam_extra:
+        out.append(wrap(exam_extra))
 
     out += section_header("ED Workup")
     out.append(wrap(dx["ed_workup"]))
@@ -1137,7 +1272,7 @@ def render_ed_md(row, dx, when: datetime, rng) -> list[str]:
     return out
 
 
-def render_hp(row, dx, when: datetime, rng) -> list[str]:
+def render_hp(row, dx, when: datetime, rng, tobacco_profile: dict) -> list[str]:
     md, role = rng.choice(PROVIDERS["hospitalist"])
     sw = sex_word(safe_str(row["sex"]))
     age = safe_str(row["age"])
@@ -1157,6 +1292,10 @@ def render_hp(row, dx, when: datetime, rng) -> list[str]:
     out.append(wrap(inject_noise(dx["ed_hpi"].format(age=age, sw=sw))))
     out.append("")
     out.append(wrap(dx["hp_hpi"]))
+    hpi_extra = tobacco_addon(tobacco_profile, "hpi_incidental", prob=0.40)
+    if hpi_extra:
+        out.append("")
+        out.append(wrap(hpi_extra))
 
     out += section_header("Past Medical History")
     out.append(wrap("; ".join(dx["pmh"]) + "."))
@@ -1177,7 +1316,7 @@ def render_hp(row, dx, when: datetime, rng) -> list[str]:
     ))
 
     out += section_header("Social History")
-    out.append(wrap(social_hx_block(row, rng)))
+    out.append(wrap(social_hx_block(rng, tobacco_profile)))
     out.append("")
     out.append(wrap(
         f"Marital status: {rng.choice(['married','single','widowed','divorced'])}. "
@@ -1198,6 +1337,9 @@ def render_hp(row, dx, when: datetime, rng) -> list[str]:
 
     out += section_header("Physical Examination")
     out.append(wrap(dx["exam"]))
+    exam_extra = tobacco_addon(tobacco_profile, "exam_addon", prob=0.40)
+    if exam_extra:
+        out.append(wrap(exam_extra))
 
     out += section_header("Diagnostic Studies")
     out.append(wrap(dx["ed_workup"]))
@@ -1343,7 +1485,7 @@ def render_pharmacy(row, dx, when: datetime, rng) -> list[str]:
     return out
 
 
-def render_discharge(row, dx, when: datetime, rng) -> list[str]:
+def render_discharge(row, dx, when: datetime, rng, tobacco_profile: dict) -> list[str]:
     md, role = rng.choice(PROVIDERS["hospitalist"])
     out = note_header("Discharge Summary", md, role, when)
 
@@ -1390,6 +1532,10 @@ def render_discharge(row, dx, when: datetime, rng) -> list[str]:
 
     out += section_header("Discharge Instructions")
     out.append(wrap(dx["discharge_instructions"]))
+    disch_extra = tobacco_addon(tobacco_profile, "discharge_addon", prob=0.50)
+    if disch_extra:
+        out.append("")
+        out.append(wrap(disch_extra))
     out.append("")
     out.append(wrap(
         "The patient verbalized understanding of all discharge instructions and was "
@@ -1410,6 +1556,7 @@ def build_chart(row, out_path: Path) -> None:
 
     # Deterministic RNG per patient so charts are reproducible
     rng = random.Random(f"chart-{row['patient_id']}")
+    tobacco_profile = tobacco_profile_for(row["patient_id"])
 
     admit_date = parse_any_date(safe_str(row["admission_date"])) or datetime.now().date()
     admit_dt = datetime.combine(admit_date, datetime.min.time()).replace(hour=rng.randint(2, 22))
@@ -1442,7 +1589,6 @@ def build_chart(row, out_path: Path) -> None:
         ("Length of stay (est.)", f"{los} days"),
         ("Primary Dx",     safe_str(row["primary_diagnosis_code"])),
         ("Description",    safe_str(row["primary_diagnosis_desc"]) or "-"),
-        ("Smoking status (CSV)", safe_str(row["smoking_status"]) or "-"),
     ]
     label_w = max(len(lbl) for lbl, _ in face_rows) + 2
     for lbl, val in face_rows:
@@ -1460,10 +1606,10 @@ def build_chart(row, out_path: Path) -> None:
     lines += render_ed_triage(row, dx, cur, rng)
 
     cur += timedelta(minutes=rng.randint(20, 90))
-    lines += render_ed_md(row, dx, cur, rng)
+    lines += render_ed_md(row, dx, cur, rng, tobacco_profile)
 
     cur += timedelta(hours=rng.randint(2, 5))
-    lines += render_hp(row, dx, cur, rng)
+    lines += render_hp(row, dx, cur, rng, tobacco_profile)
 
     cur += timedelta(hours=rng.randint(2, 6))
     lines += render_pharmacy(row, dx, cur, rng)
@@ -1484,7 +1630,7 @@ def build_chart(row, out_path: Path) -> None:
 
     # Discharge
     discharge_dt = admit_dt + timedelta(days=los, hours=rng.randint(8, 14))
-    lines += render_discharge(row, dx, discharge_dt, rng)
+    lines += render_discharge(row, dx, discharge_dt, rng, tobacco_profile)
 
     lines.append("")
     lines.append("-" * LINE_WIDTH)
